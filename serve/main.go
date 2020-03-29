@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -16,7 +17,7 @@ import (
 	"github.com/dgrijalva/jwt-go"
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
-	"github.com/subosito/twilio"
+	twilio "github.com/kevinburke/twilio-go"
 )
 
 func getEnvVar(key string) string {
@@ -33,11 +34,17 @@ var codeLength int = 6
 var storageClient *storage.Client
 var storageBucket *storage.BucketHandle
 
-var twilioClient *twilio.Twilio
+var twilioMessages *twilio.MessageService
+var twilioLookup *twilio.LookupPhoneNumbersService
 var twilioFromNumber string
 
 func init() {
-	twilioClient = twilio.NewTwilio(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"))
+	mc := twilio.NewClient(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"), nil)
+	twilioMessages = mc.Messages
+
+	lookupClient := twilio.NewLookupClient(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"), nil)
+	twilioLookup = lookupClient.LookupPhoneNumbers
+
 	twilioFromNumber = getEnvVar("TWILIO_FROM_NUMBER")
 
 	c, err := storage.NewClient(context.Background())
@@ -91,7 +98,7 @@ func main() {
 	router := httprouter.New()
 
 	router.POST("/init", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		// send a text to the cell number with the code
+		ctx := context.Background()
 
 		var ib initBody
 		if r.Body == nil {
@@ -111,6 +118,18 @@ func main() {
 			return
 		}
 
+		if ib.PhoneNumber == "" {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Missing phone number"})
+			return
+		}
+
+		qp := url.Values{}
+		qp.Add("CountryCode", "US")
+		if lpn, err := twilioLookup.Get(ctx, ib.PhoneNumber, qp); err != nil || lpn.CountryCode != "US" {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error with phone number lookup"})
+			return
+		}
+
 		token, err := uuid.NewRandom()
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating token"})
@@ -125,7 +144,7 @@ func main() {
 		}
 		code := strings.Join(digits, "")
 
-		ow := storageBucket.Object(fmt.Sprintf("%s.json", token)).NewWriter(context.Background())
+		ow := storageBucket.Object(fmt.Sprintf("%s.json", token)).NewWriter(ctx)
 		if err := json.NewEncoder(ow).Encode(tokenMetadata{Code: code}); err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error persisting token and code"})
 			return
@@ -136,10 +155,11 @@ func main() {
 			return
 		}
 
-		_, err = twilioClient.SimpleSendSMS(
+		_, err = twilioMessages.SendMessage(
 			twilioFromNumber,
 			ib.PhoneNumber,
 			fmt.Sprintf("Your code is %s", code),
+			nil,
 		)
 		if err != nil {
 			log.Println(err)
