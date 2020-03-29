@@ -125,7 +125,9 @@ func main() {
 
 		qp := url.Values{}
 		qp.Add("CountryCode", "US")
-		if lpn, err := twilioLookup.Get(ctx, ib.PhoneNumber, qp); err != nil || lpn.CountryCode != "US" {
+		qp.Add("Type", "carrier")
+		lpn, err := twilioLookup.Get(ctx, ib.PhoneNumber, qp)
+		if err != nil || lpn.CountryCode != "US" || lpn.Carrier.Type != "mobile" {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error with phone number lookup"})
 			return
 		}
