@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
 	twilio "github.com/kevinburke/twilio-go"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func getEnvVar(key string) string {
@@ -70,6 +72,7 @@ type initResp struct {
 
 type tokenMetadata struct {
 	Code string `json:"code"`
+	Hash string `json:"hash"`
 }
 
 type verifyBody struct {
@@ -146,8 +149,17 @@ func main() {
 		}
 		code := strings.Join(digits, "")
 
+		hash, err := bcrypt.GenerateFromPassword([]byte(ib.PhoneNumber), 0)
+		if err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error hashing phone number"})
+			return
+		}
+
+		tm := tokenMetadata{Code: code, Hash: base64.StdEncoding.EncodeToString(hash)}
+		log.Println(tm)
+
 		ow := storageBucket.Object(fmt.Sprintf("%s.json", token)).NewWriter(ctx)
-		if err := json.NewEncoder(ow).Encode(tokenMetadata{Code: code}); err != nil {
+		if err := json.NewEncoder(ow).Encode(tm); err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error persisting token and code"})
 			return
 		}
@@ -173,6 +185,8 @@ func main() {
 	})
 
 	router.POST("/verify", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+		ctx := context.Background()
+
 		var vb verifyBody
 		if r.Body == nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Missing request body"})
@@ -192,8 +206,9 @@ func main() {
 		}
 
 		var tm tokenMetadata
+		oh := storageBucket.Object(fmt.Sprintf("%s.json", vb.Token))
 
-		or, err := storageBucket.Object(fmt.Sprintf("%s.json", vb.Token)).NewReader(context.Background())
+		or, err := oh.NewReader(ctx)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error fetching token metadata"})
 			return
@@ -214,9 +229,14 @@ func main() {
 			return
 		}
 
+		if err := oh.Delete(ctx); err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error deleting metadata"})
+			return
+		}
+
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, &jwt.StandardClaims{
 			Issuer:   "covidtrace/operator",
-			Audience: vb.Token,
+			Audience: tm.Hash,
 		})
 		ss, err := token.SignedString(jwtSigningKey)
 		if err != nil {
