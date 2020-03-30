@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,7 +22,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
 	twilio "github.com/kevinburke/twilio-go"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func getEnvVar(key string) string {
@@ -255,13 +255,24 @@ func main() {
 		}
 		code := strings.Join(digits, "")
 
-		hash, err := bcrypt.GenerateFromPassword([]byte(ib.PhoneNumber), 0)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error hashing phone number"})
-			return
+		components := []string{
+			lpn.Carrier.Type,
+			lpn.Carrier.MobileCountryCode,
+			lpn.Carrier.MobileNetworkCode,
+			lpn.Carrier.Name,
+			lpn.CountryCode,
+			lpn.PhoneNumber,
 		}
 
-		tm := tokenMetadata{Code: code, Hash: base64.StdEncoding.EncodeToString(hash)}
+		hash := sha512.New()
+		for _, component := range components {
+			if _, err := io.WriteString(hash, component); err != nil {
+				replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error updating hash"})
+				return
+			}
+		}
+
+		tm := tokenMetadata{Code: code, Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil))}
 
 		ow := storageBucket.Object(fmt.Sprintf("%s.json", key)).NewWriter(ctx)
 		if err := json.NewEncoder(ow).Encode(tm); err != nil {
