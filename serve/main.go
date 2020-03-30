@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -32,6 +33,13 @@ func getEnvVar(key string) string {
 	return value
 }
 
+var jwtIss string = "covidtrace/operator"
+var jwtTokenAud string = "covidtrace/token"
+var jwtRefreshAud string = "covidtrace/refresh"
+var jwtSigningKey []byte
+var jwtTokenDuration time.Duration
+var jwtRefreshDuration time.Duration
+
 var codeLength int = 6
 
 var storageClient *storage.Client
@@ -42,6 +50,20 @@ var twilioLookup *twilio.LookupPhoneNumbersService
 var twilioFromNumber string
 
 func init() {
+	var err error
+
+	jwtSigningKey = []byte(getEnvVar("JWT_SIGNING_KEY"))
+
+	jwtTokenDuration, err = time.ParseDuration(getEnvVar("JWT_TOKEN_DURATION"))
+	if err != nil {
+		panic(err)
+	}
+
+	jwtRefreshDuration, err = time.ParseDuration(getEnvVar("JWT_REFRESH_DURATION"))
+	if err != nil {
+		panic(err)
+	}
+
 	mc := twilio.NewClient(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"), nil)
 	twilioMessages = mc.Messages
 
@@ -107,9 +129,81 @@ func replyJSON(w http.ResponseWriter, code int, r interface{}) {
 	io.Copy(w, bytes.NewReader(b))
 }
 
-func main() {
-	jwtSigningKey := []byte(getEnvVar("JWT_SIGNING_KEY"))
+func issueTokens(hash string) (string, string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, &tokenClaims{
+		hash,
+		jwt.StandardClaims{
+			Issuer:    jwtIss,
+			Audience:  jwtTokenAud,
+			ExpiresAt: time.Now().Add(jwtTokenDuration).Unix(),
+		},
+	})
+	tss, err := token.SignedString(jwtSigningKey)
+	if err != nil {
+		return "", "", err
+	}
 
+	refresh := jwt.NewWithClaims(jwt.SigningMethodHS256, &refreshClaims{
+		hash,
+		jwt.StandardClaims{
+			Issuer:    jwtIss,
+			Audience:  jwtRefreshAud,
+			ExpiresAt: time.Now().Add(jwtRefreshDuration).Unix(),
+		},
+	})
+	rss, err := refresh.SignedString(jwtSigningKey)
+	if err != nil {
+		return "", "", err
+	}
+
+	return tss, rss, nil
+}
+
+func validateRefreshToken(r *http.Request) (string, error) {
+	qp := r.URL.Query()
+	code := qp.Get("code")
+	if code == "" {
+		return "", errors.New("Missing code parameter")
+	}
+
+	token, err := jwt.Parse(code, func(t *jwt.Token) (interface{}, error) {
+		if t == nil {
+			return nil, errors.New("Token is nil")
+		}
+
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("Unexpected signing method: %v", t.Header["alg"])
+		}
+
+		return jwtSigningKey, nil
+	})
+
+	if err != nil || token == nil || !token.Valid {
+		return "", errors.New("Invalid jwt token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", errors.New("Invalid jwt claims")
+	}
+
+	if iss, ok := claims["iss"]; !ok || iss.(string) != jwtIss {
+		return "", fmt.Errorf("Invalid `iss` claim: %v", iss)
+	}
+
+	if aud, ok := claims["aud"]; !ok || aud.(string) != jwtRefreshAud {
+		return "", fmt.Errorf("Invalid `aud` claim: %v", aud)
+	}
+
+	hash, ok := claims["operator:hash"]
+	if !ok || hash.(string) == "" {
+		return "", fmt.Errorf("Invalid `operator:hash` claim: %v", hash)
+	}
+
+	return hash.(string), nil
+}
+
+func main() {
 	router := httprouter.New()
 
 	router.POST("/init", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
@@ -147,14 +241,14 @@ func main() {
 			return
 		}
 
-		token, err := uuid.NewRandom()
+		key, err := uuid.NewRandom()
 		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating token"})
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating key"})
 			return
 		}
 
 		digits := make([]string, codeLength)
-		rand.Seed(int64(token.ID()))
+		rand.Seed(int64(key.ID()))
 
 		for i := 0; i < codeLength; i++ {
 			digits[i] = fmt.Sprintf("%v", rand.Int()%10)
@@ -169,7 +263,7 @@ func main() {
 
 		tm := tokenMetadata{Code: code, Hash: base64.StdEncoding.EncodeToString(hash)}
 
-		ow := storageBucket.Object(fmt.Sprintf("%s.json", token)).NewWriter(ctx)
+		ow := storageBucket.Object(fmt.Sprintf("%s.json", key)).NewWriter(ctx)
 		if err := json.NewEncoder(ow).Encode(tm); err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error persisting token and code"})
 			return
@@ -187,12 +281,11 @@ func main() {
 			nil,
 		)
 		if err != nil {
-			log.Println(err)
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error sending SMS"})
 			return
 		}
 
-		replyJSON(w, http.StatusOK, initResp{Token: token.String()})
+		replyJSON(w, http.StatusOK, initResp{Token: key.String()})
 	})
 
 	router.POST("/verify", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
@@ -240,43 +333,9 @@ func main() {
 			return
 		}
 
-		td, err := time.ParseDuration("1h")
+		token, refresh, err := issueTokens(tm.Hash)
 		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Invalid token expiration"})
-			return
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, &tokenClaims{
-			tm.Hash,
-			jwt.StandardClaims{
-				Issuer:    "covidtrace/operator",
-				Audience:  "covidtrace/token",
-				ExpiresAt: time.Now().Add(td).Unix(),
-			},
-		})
-		tss, err := token.SignedString(jwtSigningKey)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating token"})
-			return
-		}
-
-		rd, err := time.ParseDuration("168h")
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Invalid refresh token expiration"})
-			return
-		}
-
-		refresh := jwt.NewWithClaims(jwt.SigningMethodHS256, &refreshClaims{
-			tm.Hash,
-			jwt.StandardClaims{
-				Issuer:    "covidtrace/operator",
-				Audience:  "covidtrace/refresh",
-				ExpiresAt: time.Now().Add(rd).Unix(),
-			},
-		})
-		rss, err := refresh.SignedString(jwtSigningKey)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating refresh token"})
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
 		}
 
@@ -285,7 +344,23 @@ func main() {
 			return
 		}
 
-		replyJSON(w, http.StatusOK, verifyResp{Token: tss, Refresh: rss})
+		replyJSON(w, http.StatusOK, verifyResp{Token: token, Refresh: refresh})
+	})
+
+	router.POST("/refresh", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+		hash, err := validateRefreshToken(r)
+		if err != nil {
+			replyJSON(w, http.StatusUnauthorized, errMessage{Message: err.Error()})
+			return
+		}
+
+		token, refresh, err := issueTokens(hash)
+		if err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
+			return
+		}
+
+		replyJSON(w, http.StatusOK, verifyResp{Token: token, Refresh: refresh})
 	})
 
 	router.PanicHandler = func(w http.ResponseWriter, _ *http.Request, _ interface{}) {
