@@ -160,7 +160,7 @@ func main() {
 		_, err = twilioMessages.SendMessage(
 			twilioFromNumber,
 			ib.PhoneNumber,
-			fmt.Sprintf("Your code is %s", code),
+			fmt.Sprintf("Your COVID Trace verification code is %s", code),
 			nil,
 		)
 		if err != nil {
