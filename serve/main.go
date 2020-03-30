@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/dgrijalva/jwt-go"
@@ -80,8 +81,19 @@ type verifyBody struct {
 	Code  string `json:"code"`
 }
 
+type tokenClaims struct {
+	Hash string `json:"operator:hash"`
+	jwt.StandardClaims
+}
+
+type refreshClaims struct {
+	Hash string `json:"operator:hash"`
+	jwt.StandardClaims
+}
+
 type verifyResp struct {
-	Token string `json:"token"`
+	Token   string `json:"token"`
+	Refresh string `json:"refresh"`
 }
 
 func replyJSON(w http.ResponseWriter, code int, r interface{}) {
@@ -156,7 +168,6 @@ func main() {
 		}
 
 		tm := tokenMetadata{Code: code, Hash: base64.StdEncoding.EncodeToString(hash)}
-		log.Println(tm)
 
 		ow := storageBucket.Object(fmt.Sprintf("%s.json", token)).NewWriter(ctx)
 		if err := json.NewEncoder(ow).Encode(tm); err != nil {
@@ -229,22 +240,52 @@ func main() {
 			return
 		}
 
-		if err := oh.Delete(ctx); err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error deleting metadata"})
+		td, err := time.ParseDuration("1h")
+		if err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Invalid token expiration"})
 			return
 		}
 
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, &jwt.StandardClaims{
-			Issuer:   "covidtrace/operator",
-			Audience: tm.Hash,
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, &tokenClaims{
+			tm.Hash,
+			jwt.StandardClaims{
+				Issuer:    "covidtrace/operator",
+				Audience:  "covidtrace/token",
+				ExpiresAt: time.Now().Add(td).Unix(),
+			},
 		})
-		ss, err := token.SignedString(jwtSigningKey)
+		tss, err := token.SignedString(jwtSigningKey)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating token"})
 			return
 		}
 
-		replyJSON(w, http.StatusOK, verifyResp{Token: ss})
+		rd, err := time.ParseDuration("168h")
+		if err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Invalid refresh token expiration"})
+			return
+		}
+
+		refresh := jwt.NewWithClaims(jwt.SigningMethodHS256, &refreshClaims{
+			tm.Hash,
+			jwt.StandardClaims{
+				Issuer:    "covidtrace/operator",
+				Audience:  "covidtrace/refresh",
+				ExpiresAt: time.Now().Add(rd).Unix(),
+			},
+		})
+		rss, err := refresh.SignedString(jwtSigningKey)
+		if err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating refresh token"})
+			return
+		}
+
+		if err := oh.Delete(ctx); err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error deleting metadata"})
+			return
+		}
+
+		replyJSON(w, http.StatusOK, verifyResp{Token: tss, Refresh: rss})
 	})
 
 	router.PanicHandler = func(w http.ResponseWriter, _ *http.Request, _ interface{}) {
