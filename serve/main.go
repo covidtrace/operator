@@ -6,7 +6,6 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,7 +17,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
-	"github.com/dgrijalva/jwt-go"
+	"github.com/covidtrace/operator/jwt"
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
 	twilio "github.com/kevinburke/twilio-go"
@@ -33,12 +32,8 @@ func getEnvVar(key string) string {
 	return value
 }
 
-var jwtIss string = "covidtrace/operator"
-var jwtTokenAud string = "covidtrace/token"
-var jwtRefreshAud string = "covidtrace/refresh"
-var jwtSigningKey []byte
-var jwtTokenDuration time.Duration
-var jwtRefreshDuration time.Duration
+var tokenIssuer *jwt.Issuer
+var refreshTokenIssuer *jwt.Issuer
 
 var codeLength int = 6
 
@@ -52,17 +47,29 @@ var twilioFromNumber string
 func init() {
 	var err error
 
-	jwtSigningKey = []byte(getEnvVar("JWT_SIGNING_KEY"))
-
-	jwtTokenDuration, err = time.ParseDuration(getEnvVar("JWT_TOKEN_DURATION"))
+	td, err := time.ParseDuration(getEnvVar("JWT_TOKEN_DURATION"))
 	if err != nil {
 		panic(err)
 	}
 
-	jwtRefreshDuration, err = time.ParseDuration(getEnvVar("JWT_REFRESH_DURATION"))
+	tokenIssuer = jwt.NewIssuer(
+		[]byte(getEnvVar("JWT_SIGNING_KEY")),
+		"covidtrace/operator",
+		"covidtrace/token",
+		td,
+	)
+
+	rd, err := time.ParseDuration(getEnvVar("JWT_REFRESH_DURATION"))
 	if err != nil {
 		panic(err)
 	}
+
+	refreshTokenIssuer = jwt.NewIssuer(
+		[]byte(getEnvVar("JWT_SIGNING_KEY")),
+		"covidtrace/operator",
+		"covidtrace/refresh",
+		rd,
+	)
 
 	mc := twilio.NewClient(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"), nil)
 	twilioMessages = mc.Messages
@@ -103,16 +110,6 @@ type verifyBody struct {
 	Code  string `json:"code"`
 }
 
-type tokenClaims struct {
-	Hash string `json:"operator:hash"`
-	jwt.StandardClaims
-}
-
-type refreshClaims struct {
-	Hash string `json:"operator:hash"`
-	jwt.StandardClaims
-}
-
 type verifyResp struct {
 	Token   string `json:"token"`
 	Refresh string `json:"refresh"`
@@ -127,80 +124,6 @@ func replyJSON(w http.ResponseWriter, code int, r interface{}) {
 
 	w.WriteHeader(code)
 	io.Copy(w, bytes.NewReader(b))
-}
-
-func issueTokens(hash string) (string, string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, &tokenClaims{
-		hash,
-		jwt.StandardClaims{
-			Issuer:    jwtIss,
-			Audience:  jwtTokenAud,
-			ExpiresAt: time.Now().Add(jwtTokenDuration).Unix(),
-		},
-	})
-	tss, err := token.SignedString(jwtSigningKey)
-	if err != nil {
-		return "", "", err
-	}
-
-	refresh := jwt.NewWithClaims(jwt.SigningMethodHS256, &refreshClaims{
-		hash,
-		jwt.StandardClaims{
-			Issuer:    jwtIss,
-			Audience:  jwtRefreshAud,
-			ExpiresAt: time.Now().Add(jwtRefreshDuration).Unix(),
-		},
-	})
-	rss, err := refresh.SignedString(jwtSigningKey)
-	if err != nil {
-		return "", "", err
-	}
-
-	return tss, rss, nil
-}
-
-func validateRefreshToken(r *http.Request) (string, error) {
-	qp := r.URL.Query()
-	code := qp.Get("code")
-	if code == "" {
-		return "", errors.New("Missing code parameter")
-	}
-
-	token, err := jwt.Parse(code, func(t *jwt.Token) (interface{}, error) {
-		if t == nil {
-			return nil, errors.New("Token is nil")
-		}
-
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("Unexpected signing method: %v", t.Header["alg"])
-		}
-
-		return jwtSigningKey, nil
-	})
-
-	if err != nil || token == nil || !token.Valid {
-		return "", errors.New("Invalid jwt token")
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return "", errors.New("Invalid jwt claims")
-	}
-
-	if iss, ok := claims["iss"]; !ok || iss.(string) != jwtIss {
-		return "", fmt.Errorf("Invalid `iss` claim: %v", iss)
-	}
-
-	if aud, ok := claims["aud"]; !ok || aud.(string) != jwtRefreshAud {
-		return "", fmt.Errorf("Invalid `aud` claim: %v", aud)
-	}
-
-	hash, ok := claims["operator:hash"]
-	if !ok || hash.(string) == "" {
-		return "", fmt.Errorf("Invalid `operator:hash` claim: %v", hash)
-	}
-
-	return hash.(string), nil
 }
 
 func main() {
@@ -344,7 +267,13 @@ func main() {
 			return
 		}
 
-		token, refresh, err := issueTokens(tm.Hash)
+		token, err := tokenIssuer.Token(tm.Hash)
+		if err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
+			return
+		}
+
+		refresh, err := refreshTokenIssuer.Token(tm.Hash)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
@@ -359,13 +288,26 @@ func main() {
 	})
 
 	router.POST("/refresh", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		hash, err := validateRefreshToken(r)
+		qp := r.URL.Query()
+		code := qp.Get("code")
+		if code == "" {
+			replyJSON(w, http.StatusUnauthorized, errMessage{Message: "Missing code parameter"})
+			return
+		}
+
+		hash, err := refreshTokenIssuer.Validate(code)
 		if err != nil {
 			replyJSON(w, http.StatusUnauthorized, errMessage{Message: err.Error()})
 			return
 		}
 
-		token, refresh, err := issueTokens(hash)
+		token, err := tokenIssuer.Token(hash)
+		if err != nil {
+			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
+			return
+		}
+
+		refresh, err := refreshTokenIssuer.Token(hash)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
