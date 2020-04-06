@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
-	"github.com/covidtrace/operator/jwt"
+	"github.com/covidtrace/jwt"
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
 	twilio "github.com/kevinburke/twilio-go"

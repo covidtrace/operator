@@ -4,7 +4,7 @@ go 1.14
 
 require (
 	cloud.google.com/go v0.38.0
-	github.com/dgrijalva/jwt-go v3.2.0+incompatible
+	github.com/covidtrace/jwt v0.1.3
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/google/uuid v1.1.1
 	github.com/inconshreveable/log15 v0.0.0-20200109203555-b30bc20e4fd1 // indirect
