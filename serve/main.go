@@ -34,7 +34,7 @@ func getEnvVar(key string) string {
 
 var tokenIssuer *jwt.Issuer
 var refreshTokenIssuer *jwt.Issuer
-
+var hashSalt string
 var codeLength int = 6
 
 var storageClient *storage.Client
@@ -70,6 +70,8 @@ func init() {
 		"covidtrace/refresh",
 		rd,
 	)
+
+	hashSalt = getEnvVar("HASH_SALT")
 
 	mc := twilio.NewClient(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"), nil)
 	twilioMessages = mc.Messages
@@ -179,6 +181,7 @@ func main() {
 		code := strings.Join(digits, "")
 
 		components := []string{
+			hashSalt,
 			lpn.Carrier.Type,
 			lpn.Carrier.MobileCountryCode,
 			lpn.Carrier.MobileNetworkCode,
@@ -267,13 +270,13 @@ func main() {
 			return
 		}
 
-		token, err := tokenIssuer.Token(tm.Hash)
+		token, err := tokenIssuer.Token(tm.Hash, 0)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
 		}
 
-		refresh, err := refreshTokenIssuer.Token(tm.Hash)
+		refresh, err := refreshTokenIssuer.Token(tm.Hash, 0)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
@@ -295,19 +298,19 @@ func main() {
 			return
 		}
 
-		hash, err := refreshTokenIssuer.Validate(code)
+		hash, refreshed, err := refreshTokenIssuer.Validate(code)
 		if err != nil {
 			replyJSON(w, http.StatusUnauthorized, errMessage{Message: err.Error()})
 			return
 		}
 
-		token, err := tokenIssuer.Token(hash)
+		token, err := tokenIssuer.Token(hash, refreshed+1)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
 		}
 
-		refresh, err := refreshTokenIssuer.Token(hash)
+		refresh, err := refreshTokenIssuer.Token(hash, refreshed+1)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
