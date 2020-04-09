@@ -73,6 +73,8 @@ curl -XPOST 'https://covidtrace-operator.domain/refresh?code=REFRESH_JWT_TOKEN'
 COVID Trace leverages Google Cloud for its infrastructure needs. In particular, Operator is deployed as a Cloud Run service with a set of environment variables. We have deployed Operator as a private service behind a [rate limiting proxy](https://github.com/covidtrace/proxy) to protect against abuse. The following environment variables are required.
 
 ```
+CLOUD_STORAGE_BUCKET="bucket to store token files"
+JWT_NAMESPACE="name to prepend to `iss` and `aud` claims"
 JWT_SIGNING_KEY="some long random key used to sign JWTs"
 JWT_TOKEN_DURATION="1h"
 JWT_REFRESH_DURATION="504h"

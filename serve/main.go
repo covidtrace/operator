@@ -32,6 +32,7 @@ func getEnvVar(key string) string {
 	return value
 }
 
+var tokenNamespace string
 var tokenIssuer *jwt.Issuer
 var refreshTokenIssuer *jwt.Issuer
 var hashSalt string
@@ -47,6 +48,8 @@ var twilioFromNumber string
 func init() {
 	var err error
 
+	tokenNamespace = getEnvVar("JWT_NAMESPACE")
+
 	td, err := time.ParseDuration(getEnvVar("JWT_TOKEN_DURATION"))
 	if err != nil {
 		panic(err)
@@ -54,8 +57,8 @@ func init() {
 
 	tokenIssuer = jwt.NewIssuer(
 		[]byte(getEnvVar("JWT_SIGNING_KEY")),
-		"covidtrace/operator",
-		"covidtrace/token",
+		fmt.Sprintf("%s/operator", tokenNamespace),
+		fmt.Sprintf("%s/token", tokenNamespace),
 		td,
 	)
 
@@ -66,8 +69,8 @@ func init() {
 
 	refreshTokenIssuer = jwt.NewIssuer(
 		[]byte(getEnvVar("JWT_SIGNING_KEY")),
-		"covidtrace/operator",
-		"covidtrace/refresh",
+		fmt.Sprintf("%s/operator", tokenNamespace),
+		fmt.Sprintf("%s/refresh", tokenNamespace),
 		rd,
 	)
 
@@ -87,7 +90,7 @@ func init() {
 	}
 
 	storageClient = c
-	storageBucket = storageClient.Bucket("covidtrace-operator")
+	storageBucket = storageClient.Bucket(getEnvVar("CLOUD_STORAGE_BUCKET"))
 }
 
 type errMessage struct {
