@@ -301,19 +301,19 @@ func main() {
 			return
 		}
 
-		hash, refreshed, err := refreshTokenIssuer.Validate(code)
+		claims, err := refreshTokenIssuer.Validate(code)
 		if err != nil {
 			replyJSON(w, http.StatusUnauthorized, errMessage{Message: err.Error()})
 			return
 		}
 
-		token, err := tokenIssuer.Token(hash, refreshed+1)
+		token, err := tokenIssuer.Token(claims.Hash, claims.Refreshed+1)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
 		}
 
-		refresh, err := refreshTokenIssuer.Token(hash, refreshed+1)
+		refresh, err := refreshTokenIssuer.Token(claims.Hash, claims.Refreshed+1)
 		if err != nil {
 			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
 			return
