@@ -17,7 +17,7 @@ All of the configuration necessary to run Operator can be specified using enviro
 
 ## API
 
-### POST /init
+### `POST /init`
 
 This request is used to initiate a verification session. Operator handles computing a hash of the phone number details, generates a verification code, stores a file in Cloud Storage with the relevant metadata and returns a token that identifies that file. That token, combined with the verification code (delivered via text message) are used in the next request to obtain JWT tokens.
 
@@ -26,7 +26,7 @@ curl -XPOST https://covidtrace-operator.domain/init -d '{"phone": "1234567890"}'
 {"token": "a8b46109-16ce-4da8-b46f-fcf7ae9b6511"}
 ```
 
-### POST /verify
+### `POST /verify`
 
 As alluded to above, this request completes the verification session. Operator removes files from Cloud Storage so they cannot be used to obtain tokens more than once. It is also highly recommended to use a Cloud Storage lifecycle rule to remove files older than one day as an extra precaution.
 
@@ -59,7 +59,7 @@ Decoded JWT_REFRESH_TOKEN:
 }
 ```
 
-### POST /refresh
+### `POST /refresh`
 
 This request is used to refresh a set of JWT tokens. In practice, the expiration of tokens should be much sooner than that of refresh tokens.
 
