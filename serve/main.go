@@ -22,12 +22,12 @@ func init() {
 	jsk := []byte(util.GetEnvVar("JWT_SIGNING_KEY"))
 	tns := util.GetEnvVar("JWT_NAMESPACE")
 
-	td, err := time.ParseDuration(util.GetEnvVar("JWT_TOKEN_DURATION"))
+	ttd, err := time.ParseDuration(util.GetEnvVar("JWT_TOKEN_DURATION"))
 	if err != nil {
 		panic(err)
 	}
 
-	rd, err := time.ParseDuration(util.GetEnvVar("JWT_REFRESH_DURATION"))
+	trd, err := time.ParseDuration(util.GetEnvVar("JWT_REFRESH_DURATION"))
 	if err != nil {
 		panic(err)
 	}
@@ -38,8 +38,18 @@ func init() {
 	}
 
 	iss := fmt.Sprintf("%s/operator", tns)
-	tokenHandler = handler.NewSMS(tb, jsk, iss, fmt.Sprintf("%s/token", tns), td, rd)
-	elevatedHandler = handler.NewEmail(tb, jsk, iss, fmt.Sprintf("%s/elevated", tns), td, rd)
+	tokenHandler = handler.NewSMS(tb, jsk, iss, fmt.Sprintf("%s/token", tns), ttd, trd)
+
+	etd, err := time.ParseDuration(util.GetEnvVar("JWT_ELEVATED_TOKEN_DURATION"))
+	if err != nil {
+		panic(err)
+	}
+
+	erd, err := time.ParseDuration(util.GetEnvVar("JWT_ELEVATED_REFRESH_DURATION"))
+	if err != nil {
+		panic(err)
+	}
+	elevatedHandler = handler.NewEmail(tb, jsk, iss, fmt.Sprintf("%s/elevated", tns), etd, erd)
 }
 
 func main() {

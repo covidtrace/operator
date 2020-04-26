@@ -17,15 +17,14 @@ type Handler interface {
 	Issuer() *jwt.Issuer
 	Refresher() *jwt.Issuer
 	Bucket() storage.Bucket
-	Meta(context.Context, *http.Request) (context.Context, *string, *tokenMeta, error)
+	TokenMeta(context.Context, *http.Request) (*tokenMeta, error)
 	Dispatch(context.Context, *tokenMeta) error
 }
 
-type contextKey int
-
 type tokenMeta struct {
-	Code string `json:"code"`
-	Hash string `json:"hash"`
+	dest, key string
+	Code      string `json:"code"`
+	Hash      string `json:"hash"`
 }
 
 type initRes struct {
@@ -44,33 +43,30 @@ type verifyRes struct {
 
 func Init(h Handler) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		ctx, token, meta, err := h.Meta(context.Background(), r)
+		ctx := context.Background()
+
+		tm, err := h.TokenMeta(context.Background(), r)
 		if err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
 			return
 		}
 
-		if token == nil {
+		if tm == nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "nil token"})
 			return
 		}
 
-		if meta == nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "nil meta"})
-			return
-		}
-
-		if err := h.Bucket().Put(ctx, fmt.Sprintf("%s.json", *token), *meta); err != nil {
+		if err := h.Bucket().Put(ctx, fmt.Sprintf("%s.json", tm), tm.key); err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error persisting token and code"})
 			return
 		}
 
-		if err := h.Dispatch(ctx, meta); err != nil {
+		if err := h.Dispatch(ctx, tm); err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
 			return
 		}
 
-		util.ReplyJSON(w, http.StatusOK, initRes{Token: *token})
+		util.ReplyJSON(w, http.StatusOK, initRes{Token: tm.key})
 	}
 }
 

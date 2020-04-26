@@ -58,33 +58,31 @@ type emailReq struct {
 	Email string `json:"email"`
 }
 
-var emailKey contextKey
-
-func (h *emailHandler) Meta(ctx context.Context, r *http.Request) (context.Context, *string, *tokenMeta, error) {
+func (h *emailHandler) TokenMeta(ctx context.Context, r *http.Request) (*tokenMeta, error) {
 	if r.Body == nil {
-		return ctx, nil, nil, errors.New("missing request body")
+		return nil, errors.New("missing request body")
 	}
 	defer r.Body.Close()
 
 	var req emailReq
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err == io.EOF {
-		return ctx, nil, nil, errors.New("missing request body")
+		return nil, errors.New("missing request body")
 	}
 
 	if err != nil {
-		return ctx, nil, nil, errors.New("error parsing request body")
+		return nil, errors.New("error parsing request body")
 	}
 
 	if req.Email == "" {
-		return ctx, nil, nil, errors.New("missing email")
+		return nil, errors.New("missing email")
 	}
 
 	// TODO email whitelist
 
 	key, err := uuid.NewRandom()
 	if err != nil {
-		return ctx, nil, nil, errors.New("error generating key")
+		return nil, errors.New("error generating key")
 	}
 
 	digits := make([]string, h.codeLength)
@@ -100,12 +98,16 @@ func (h *emailHandler) Meta(ctx context.Context, r *http.Request) (context.Conte
 	hash := sha512.New()
 	for _, component := range components {
 		if _, err := io.WriteString(hash, component); err != nil {
-			return ctx, nil, nil, errors.New("error updating hash")
+			return nil, errors.New("error updating hash")
 		}
 	}
 
-	token := key.String()
-	return context.WithValue(ctx, emailKey, req.Email), &token, &tokenMeta{Code: code, Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil))}, nil
+	return &tokenMeta{
+		Code: code,
+		Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil)),
+		dest: req.Email,
+		key:  key.String(),
+	}, nil
 }
 
 func (h *emailHandler) Dispatch(context.Context, *tokenMeta) error {

@@ -67,26 +67,24 @@ type phoneReq struct {
 	Phone string `json:"phone"`
 }
 
-var phoneKey contextKey
-
-func (h *smsHandler) Meta(ctx context.Context, r *http.Request) (context.Context, *string, *tokenMeta, error) {
+func (h *smsHandler) TokenMeta(ctx context.Context, r *http.Request) (*tokenMeta, error) {
 	if r.Body == nil {
-		return ctx, nil, nil, errors.New("missing request body")
+		return nil, errors.New("missing request body")
 	}
 	defer r.Body.Close()
 
 	var req phoneReq
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err == io.EOF {
-		return ctx, nil, nil, errors.New("missing request body")
+		return nil, errors.New("missing request body")
 	}
 
 	if err != nil {
-		return ctx, nil, nil, errors.New("error parsing request body")
+		return nil, errors.New("error parsing request body")
 	}
 
 	if req.Phone == "" {
-		return ctx, nil, nil, errors.New("missing phone number")
+		return nil, errors.New("missing phone number")
 	}
 
 	qp := url.Values{}
@@ -95,12 +93,12 @@ func (h *smsHandler) Meta(ctx context.Context, r *http.Request) (context.Context
 
 	lpn, err := h.lookupSvc.Get(ctx, req.Phone, qp)
 	if err != nil || lpn.CountryCode != "US" || lpn.Carrier.Type != "mobile" {
-		return ctx, nil, nil, errors.New("error with phone number lookup")
+		return nil, errors.New("error with phone number lookup")
 	}
 
 	key, err := uuid.NewRandom()
 	if err != nil {
-		return ctx, nil, nil, errors.New("error generating key")
+		return nil, errors.New("error generating key")
 	}
 
 	digits := make([]string, h.codeLength)
@@ -124,27 +122,26 @@ func (h *smsHandler) Meta(ctx context.Context, r *http.Request) (context.Context
 	hash := sha512.New()
 	for _, component := range components {
 		if _, err := io.WriteString(hash, component); err != nil {
-			return ctx, nil, nil, errors.New("error updating hash")
+			return nil, errors.New("error updating hash")
 		}
 	}
 
-	token := key.String()
-	return context.WithValue(ctx, phoneKey, req.Phone), &token, &tokenMeta{Code: code, Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil))}, nil
+	return &tokenMeta{
+		Code: code,
+		Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil)),
+		dest: req.Phone,
+		key:  key.String(),
+	}, nil
 }
 
 func (h *smsHandler) Dispatch(ctx context.Context, tm *tokenMeta) error {
-	phonei := ctx.Value(phoneKey)
-	if phonei == nil {
-		return errors.New("missing phone number")
-	}
-	phone, ok := phonei.(string)
-	if !ok {
+	if tm.dest == "" {
 		return errors.New("invalid phone number")
 	}
 
 	if _, err := h.messageSvc.SendMessage(
 		h.fromNumber,
-		phone,
+		tm.dest,
 		fmt.Sprintf("Your COVID Trace verification code is %s", tm.Code),
 		nil,
 	); err != nil {
