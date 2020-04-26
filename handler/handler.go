@@ -16,7 +16,7 @@ import (
 type Handler interface {
 	Issuer() *jwt.Issuer
 	Refresher() *jwt.Issuer
-	Bucket() storage.Bucket
+	Bucket() storage.JSONBucket
 	TokenMeta(context.Context, *http.Request) (*tokenMeta, error)
 	Dispatch(context.Context, *tokenMeta) error
 }
@@ -56,7 +56,7 @@ func Init(h Handler) httprouter.Handle {
 			return
 		}
 
-		if err := h.Bucket().Put(ctx, fmt.Sprintf("%s.json", tm), tm.key); err != nil {
+		if err := h.Bucket().PutJSON(ctx, fmt.Sprintf("%s.json", tm.key), tm); err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error persisting token and code"})
 			return
 		}
@@ -92,10 +92,15 @@ func Verify(h Handler) httprouter.Handle {
 			return
 		}
 
+		key := fmt.Sprintf("%s.json", req.Token)
 		var tm tokenMeta
-		done, err := h.Bucket().Get(ctx, fmt.Sprintf("%s.json", req.Token), &tm)
+		found, err := h.Bucket().GetJSON(ctx, key, &tm)
 		if err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error fetching token metadata"})
+			return
+		}
+		if !found {
+			util.ReplyJSON(w, http.StatusNotFound, util.Error{Message: "No token metadata found"})
 			return
 		}
 
@@ -116,7 +121,7 @@ func Verify(h Handler) httprouter.Handle {
 			return
 		}
 
-		if err := done(ctx); err != nil {
+		if _, err := h.Bucket().Delete(ctx, key); err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error deleting metadata"})
 			return
 		}

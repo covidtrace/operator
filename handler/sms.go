@@ -22,7 +22,7 @@ import (
 )
 
 type smsHandler struct {
-	bucket     storage.Bucket
+	bucket     storage.JSONBucket
 	issuer     *jwt.Issuer
 	refresh    *jwt.Issuer
 	codeLength int
@@ -32,7 +32,7 @@ type smsHandler struct {
 	lookupSvc  *twilio.LookupPhoneNumbersService
 }
 
-func NewSMS(bucket storage.Bucket, jwtSigningKey []byte, iss, aud string, td, rd time.Duration) Handler {
+func NewSMS(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td, rd time.Duration) Handler {
 	issuer := jwt.NewIssuer(jwtSigningKey, iss, aud, td)
 	refresh := issuer.WithDur(rd)
 
@@ -59,7 +59,7 @@ func (h *smsHandler) Refresher() *jwt.Issuer {
 	return h.refresh
 }
 
-func (h *smsHandler) Bucket() storage.Bucket {
+func (h *smsHandler) Bucket() storage.JSONBucket {
 	return h.bucket
 }
 

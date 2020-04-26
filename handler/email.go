@@ -20,7 +20,8 @@ import (
 )
 
 type emailHandler struct {
-	bucket      storage.Bucket
+	bucket      storage.JSONBucket
+	whitelist   storage.Bucket
 	issuer      *jwt.Issuer
 	refresh     *jwt.Issuer
 	codeLength  int
@@ -28,18 +29,24 @@ type emailHandler struct {
 	fromAddress string
 }
 
-func NewEmail(bucket storage.Bucket, jwtSigningKey []byte, iss, aud string, td, rd time.Duration) Handler {
+func NewEmail(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td, rd time.Duration) (Handler, error) {
 	issuer := jwt.NewIssuer(jwtSigningKey, iss, aud, td)
 	refresh := issuer.WithDur(rd)
 
+	whitelist, err := storage.NewBucket(util.GetEnvVar("CLOUD_STORAGE_WHITELIST_BUCKET"))
+	if err != nil {
+		return nil, err
+	}
+
 	return &emailHandler{
 		bucket:      bucket,
+		whitelist:   whitelist,
 		issuer:      issuer,
 		refresh:     refresh,
 		codeLength:  8,
 		hashSalt:    util.GetEnvVar("HASH_SALT"),
 		fromAddress: util.GetEnvVar("EMAIL_FROM_ADDRESS"),
-	}
+	}, nil
 }
 
 func (h *emailHandler) Issuer() *jwt.Issuer {
@@ -50,7 +57,7 @@ func (h *emailHandler) Refresher() *jwt.Issuer {
 	return h.refresh
 }
 
-func (h *emailHandler) Bucket() storage.Bucket {
+func (h *emailHandler) Bucket() storage.JSONBucket {
 	return h.bucket
 }
 
@@ -78,7 +85,15 @@ func (h *emailHandler) TokenMeta(ctx context.Context, r *http.Request) (*tokenMe
 		return nil, errors.New("missing email")
 	}
 
-	// TODO email whitelist
+	if reader, err := h.whitelist.Get(ctx, strings.ToLower(req.Email)); err != nil {
+		return nil, errors.New("error checking email whitelist")
+	} else if reader == nil {
+		return nil, errors.New("email not in whitelist")
+	} else {
+		if err := reader.Close(); err != nil {
+			return nil, errors.New("error closing whitelist reader")
+		}
+	}
 
 	key, err := uuid.NewRandom()
 	if err != nil {

@@ -32,7 +32,7 @@ func init() {
 		panic(err)
 	}
 
-	tb, err := storage.NewBucket(util.GetEnvVar("CLOUD_STORAGE_BUCKET"))
+	tb, err := storage.NewJSONBucket(util.GetEnvVar("CLOUD_STORAGE_BUCKET"))
 	if err != nil {
 		panic(err)
 	}
@@ -49,7 +49,11 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	elevatedHandler = handler.NewEmail(tb, jsk, iss, fmt.Sprintf("%s/elevated", tns), etd, erd)
+
+	elevatedHandler, err = handler.NewEmail(tb, jsk, iss, fmt.Sprintf("%s/elevated", tns), etd, erd)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func main() {
