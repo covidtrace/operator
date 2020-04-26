@@ -14,17 +14,24 @@ import (
 )
 
 type Handler interface {
+	ID() string
 	Issuer() *jwt.Issuer
 	Refresher() *jwt.Issuer
+	Identifier(tokenMeta) string
+	Role(tokenMeta) string
 	Bucket() storage.JSONBucket
 	TokenMeta(context.Context, *http.Request) (*tokenMeta, error)
 	Dispatch(context.Context, *tokenMeta) error
 }
 
 type tokenMeta struct {
-	dest, key string
-	Code      string `json:"code"`
-	Hash      string `json:"hash"`
+	key, dispatch string
+
+	HandlerID  string `json:"handler"`
+	Identifier string `json:"identifier,omitempty"`
+	Code       string `json:"code"`
+	Hash       string `json:"hash,omitempty"`
+	Role       string `json:"role,omitempty"`
 }
 
 type initRes struct {
@@ -56,6 +63,7 @@ func Init(h Handler) httprouter.Handle {
 			return
 		}
 
+		tm.HandlerID = h.ID()
 		if err := h.Bucket().PutJSON(ctx, fmt.Sprintf("%s.json", tm.key), tm); err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error persisting token and code"})
 			return
@@ -104,18 +112,23 @@ func Verify(h Handler) httprouter.Handle {
 			return
 		}
 
+		if tm.HandlerID != h.ID() {
+			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Invalid handler"})
+			return
+		}
+
 		if tm.Code != req.Code {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Invalid code"})
 			return
 		}
 
-		token, err := h.Issuer().Token(tm.Hash, 0)
+		token, err := h.Issuer().Token(tm.Hash, 0, h.Identifier(tm), h.Role(tm))
 		if err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
 			return
 		}
 
-		refresh, err := h.Issuer().Token(tm.Hash, 0)
+		refresh, err := h.Issuer().Token(tm.Hash, 0, h.Identifier(tm), h.Role(tm))
 		if err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
 			return
@@ -145,13 +158,23 @@ func Refresh(h Handler) httprouter.Handle {
 			return
 		}
 
-		token, err := h.Issuer().Token(claims.Hash, claims.Refreshed+1)
+		token, err := h.Issuer().Token(
+			claims.Hash,
+			claims.Refreshed+1,
+			claims.Identifier,
+			claims.Role,
+		)
 		if err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
 			return
 		}
 
-		refresh, err := h.Refresher().Token(claims.Hash, claims.Refreshed+1)
+		refresh, err := h.Refresher().Token(
+			claims.Hash,
+			claims.Refreshed+1,
+			claims.Identifier,
+			claims.Role,
+		)
 		if err != nil {
 			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
 			return

@@ -2,8 +2,6 @@ package handler
 
 import (
 	"context"
-	"crypto/sha512"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,8 +23,8 @@ type emailHandler struct {
 	issuer      *jwt.Issuer
 	refresh     *jwt.Issuer
 	codeLength  int
-	hashSalt    string
 	fromAddress string
+	role        string
 }
 
 func NewEmail(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td, rd time.Duration) (Handler, error) {
@@ -44,9 +42,13 @@ func NewEmail(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, 
 		issuer:      issuer,
 		refresh:     refresh,
 		codeLength:  8,
-		hashSalt:    util.GetEnvVar("HASH_SALT"),
 		fromAddress: util.GetEnvVar("EMAIL_FROM_ADDRESS"),
+		role:        util.GetEnvVar("JWT_ELEVATED_ROLE"),
 	}, nil
+}
+
+func (h *emailHandler) ID() string {
+	return "emailhandler"
 }
 
 func (h *emailHandler) Issuer() *jwt.Issuer {
@@ -108,24 +110,24 @@ func (h *emailHandler) TokenMeta(ctx context.Context, r *http.Request) (*tokenMe
 	}
 	code := strings.Join(digits, "")
 
-	components := []string{h.hashSalt, req.Email}
-
-	hash := sha512.New()
-	for _, component := range components {
-		if _, err := io.WriteString(hash, component); err != nil {
-			return nil, errors.New("error updating hash")
-		}
-	}
-
 	return &tokenMeta{
-		Code: code,
-		Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil)),
-		dest: req.Email,
-		key:  key.String(),
+		Code:       code,
+		Identifier: req.Email,
+		Role:       h.role,
+		dispatch:   req.Email,
+		key:        key.String(),
 	}, nil
 }
 
 func (h *emailHandler) Dispatch(context.Context, *tokenMeta) error {
 	// TODO this
 	return nil
+}
+
+func (h *emailHandler) Identifier(tm tokenMeta) string {
+	return tm.Identifier
+}
+
+func (h *emailHandler) Role(tm tokenMeta) string {
+	return tm.Role
 }

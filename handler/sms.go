@@ -51,6 +51,10 @@ func NewSMS(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td
 	}
 }
 
+func (h *smsHandler) ID() string {
+	return "smshandler"
+}
+
 func (h *smsHandler) Issuer() *jwt.Issuer {
 	return h.issuer
 }
@@ -127,21 +131,21 @@ func (h *smsHandler) TokenMeta(ctx context.Context, r *http.Request) (*tokenMeta
 	}
 
 	return &tokenMeta{
-		Code: code,
-		Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil)),
-		dest: req.Phone,
-		key:  key.String(),
+		Code:     code,
+		Hash:     base64.StdEncoding.EncodeToString(hash.Sum(nil)),
+		dispatch: req.Phone,
+		key:      key.String(),
 	}, nil
 }
 
 func (h *smsHandler) Dispatch(ctx context.Context, tm *tokenMeta) error {
-	if tm.dest == "" {
+	if tm.dispatch == "" {
 		return errors.New("invalid phone number")
 	}
 
 	if _, err := h.messageSvc.SendMessage(
 		h.fromNumber,
-		tm.dest,
+		tm.dispatch,
 		fmt.Sprintf("Your COVID Trace verification code is %s", tm.Code),
 		nil,
 	); err != nil {
@@ -149,4 +153,12 @@ func (h *smsHandler) Dispatch(ctx context.Context, tm *tokenMeta) error {
 	}
 
 	return nil
+}
+
+func (h *smsHandler) Identifier(tokenMeta) string {
+	return ""
+}
+
+func (h *smsHandler) Role(tokenMeta) string {
+	return "app_user"
 }
