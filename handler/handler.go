@@ -3,13 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/covidtrace/jwt"
 	"github.com/covidtrace/operator/storage"
-	"github.com/covidtrace/operator/util"
+	httputils "github.com/covidtrace/utils/http"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -54,27 +55,27 @@ func Init(h Handler) httprouter.Handle {
 
 		tm, err := h.TokenMeta(context.Background(), r)
 		if err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
+			httputils.ReplyError(w, err, http.StatusBadRequest)
 			return
 		}
 
 		if tm == nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "nil token"})
+			httputils.ReplyError(w, errors.New("nil TokenMeta"), http.StatusBadRequest)
 			return
 		}
 
 		tm.HandlerID = h.ID()
 		if err := h.Bucket().PutJSON(ctx, fmt.Sprintf("%s.json", tm.key), tm); err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error persisting token and code"})
+			httputils.ReplyError(w, errors.New("error persisting token and code"), http.StatusBadRequest)
 			return
 		}
 
 		if err := h.Dispatch(ctx, tm); err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
+			httputils.ReplyError(w, err, http.StatusBadRequest)
 			return
 		}
 
-		util.ReplyJSON(w, http.StatusOK, initRes{Token: tm.key})
+		httputils.ReplyJSON(w, initRes{Token: tm.key}, http.StatusOK)
 	}
 }
 
@@ -84,19 +85,19 @@ func Verify(h Handler) httprouter.Handle {
 
 		var req verifyReq
 		if r.Body == nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Missing request body"})
+			httputils.ReplyError(w, errors.New("missing request body"), http.StatusBadRequest)
 			return
 		}
 		defer r.Body.Close()
 
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err == io.EOF {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Missing request body"})
+			httputils.ReplyError(w, errors.New("missing request body"), http.StatusBadRequest)
 			return
 		}
 
 		if err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error parsing request body"})
+			httputils.ReplyError(w, errors.New("error parsing request body"), http.StatusBadRequest)
 			return
 		}
 
@@ -104,42 +105,42 @@ func Verify(h Handler) httprouter.Handle {
 		var tm tokenMeta
 		found, err := h.Bucket().GetJSON(ctx, key, &tm)
 		if err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error fetching token metadata"})
+			httputils.ReplyError(w, errors.New("error fetching token metadata"), http.StatusBadRequest)
 			return
 		}
 		if !found {
-			util.ReplyJSON(w, http.StatusNotFound, util.Error{Message: "No token metadata found"})
+			httputils.ReplyError(w, errors.New("no token metadata found"), http.StatusNotFound)
 			return
 		}
 
 		if tm.HandlerID != h.ID() {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Invalid handler"})
+			httputils.ReplyError(w, errors.New("invalid handler"), http.StatusBadRequest)
 			return
 		}
 
 		if tm.Code != req.Code {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Invalid code"})
+			httputils.ReplyError(w, errors.New("invalid code"), http.StatusBadRequest)
 			return
 		}
 
 		token, err := h.Issuer().Token(tm.Hash, 0, h.Identifier(tm), h.Role(tm))
 		if err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
+			httputils.ReplyError(w, err, http.StatusBadRequest)
 			return
 		}
 
 		refresh, err := h.Issuer().Token(tm.Hash, 0, h.Identifier(tm), h.Role(tm))
 		if err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
+			httputils.ReplyError(w, err, http.StatusBadRequest)
 			return
 		}
 
 		if _, err := h.Bucket().Delete(ctx, key); err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: "Error deleting metadata"})
+			httputils.ReplyError(w, errors.New("error deleting metadata"), http.StatusBadRequest)
 			return
 		}
 
-		util.ReplyJSON(w, http.StatusOK, verifyRes{Token: token, Refresh: refresh})
+		httputils.ReplyJSON(w, verifyRes{Token: token, Refresh: refresh}, http.StatusOK)
 	}
 }
 
@@ -148,13 +149,13 @@ func Refresh(h Handler) httprouter.Handle {
 		query := r.URL.Query()
 		code := query.Get("code")
 		if code == "" {
-			util.ReplyJSON(w, http.StatusUnauthorized, util.Error{Message: "Missing code parameter"})
+			httputils.ReplyError(w, errors.New("missing code parameter"), http.StatusUnauthorized)
 			return
 		}
 
 		claims, err := h.Issuer().Validate(code)
 		if err != nil {
-			util.ReplyJSON(w, http.StatusUnauthorized, util.Error{Message: err.Error()})
+			httputils.ReplyError(w, err, http.StatusUnauthorized)
 			return
 		}
 
@@ -165,7 +166,7 @@ func Refresh(h Handler) httprouter.Handle {
 			claims.Role,
 		)
 		if err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
+			httputils.ReplyError(w, err, http.StatusBadRequest)
 			return
 		}
 
@@ -176,10 +177,10 @@ func Refresh(h Handler) httprouter.Handle {
 			claims.Role,
 		)
 		if err != nil {
-			util.ReplyJSON(w, http.StatusBadRequest, util.Error{Message: err.Error()})
+			httputils.ReplyError(w, err, http.StatusBadRequest)
 			return
 		}
 
-		util.ReplyJSON(w, http.StatusOK, verifyRes{Token: token, Refresh: refresh})
+		httputils.ReplyJSON(w, verifyRes{Token: token, Refresh: refresh}, http.StatusOK)
 	}
 }

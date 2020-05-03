@@ -13,7 +13,7 @@ import (
 
 	"github.com/covidtrace/jwt"
 	"github.com/covidtrace/operator/storage"
-	"github.com/covidtrace/operator/util"
+	"github.com/covidtrace/utils/env"
 	"github.com/google/uuid"
 	"github.com/sendgrid/sendgrid-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
@@ -40,7 +40,7 @@ func NewEmail(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, 
 	issuer := jwt.NewIssuer(jwtSigningKey, iss, aud, td)
 	refresh := issuer.WithDur(rd)
 
-	whitelist, err := storage.NewBucket(util.GetEnvVar("CLOUD_STORAGE_WHITELIST_BUCKET"))
+	whitelist, err := storage.NewBucket(env.MustGet("CLOUD_STORAGE_WHITELIST_BUCKET"))
 	if err != nil {
 		return nil, err
 	}
@@ -51,12 +51,12 @@ func NewEmail(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, 
 		issuer:     issuer,
 		refresh:    refresh,
 		codeLength: 8,
-		role:       util.GetEnvVar("JWT_ELEVATED_ROLE"),
+		role:       env.MustGet("JWT_ELEVATED_ROLE"),
 		sendgrid: sendgridConfig{
-			address:    util.GetEnvVar("EMAIL_FROM_ADDRESS"),
-			name:       util.GetEnvVar("EMAIL_FROM_NAME"),
-			apiKey:     util.GetEnvVar("SENDGRID_API_KEY"),
-			templateID: util.GetEnvVar("SENDGRID_DYNAMIC_TEMPLATE_ID"),
+			address:    env.MustGet("EMAIL_FROM_ADDRESS"),
+			name:       env.MustGet("EMAIL_FROM_NAME"),
+			apiKey:     env.MustGet("SENDGRID_API_KEY"),
+			templateID: env.MustGet("SENDGRID_DYNAMIC_TEMPLATE_ID"),
 		},
 	}, nil
 }

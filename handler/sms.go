@@ -16,7 +16,7 @@ import (
 
 	"github.com/covidtrace/jwt"
 	"github.com/covidtrace/operator/storage"
-	"github.com/covidtrace/operator/util"
+	"github.com/covidtrace/utils/env"
 	"github.com/google/uuid"
 	"github.com/kevinburke/twilio-go"
 )
@@ -40,17 +40,17 @@ func NewSMS(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td
 	issuer := jwt.NewIssuer(jwtSigningKey, iss, aud, td)
 	refresh := issuer.WithDur(rd)
 
-	tc := twilio.NewClient(util.GetEnvVar("TWILIO_ACCOUNT_SID"), util.GetEnvVar("TWILIO_AUTH_TOKEN"), nil)
-	tlc := twilio.NewLookupClient(util.GetEnvVar("TWILIO_ACCOUNT_SID"), util.GetEnvVar("TWILIO_AUTH_TOKEN"), nil)
+	tc := twilio.NewClient(env.MustGet("TWILIO_ACCOUNT_SID"), env.MustGet("TWILIO_AUTH_TOKEN"), nil)
+	tlc := twilio.NewLookupClient(env.MustGet("TWILIO_ACCOUNT_SID"), env.MustGet("TWILIO_AUTH_TOKEN"), nil)
 
 	return &smsHandler{
 		bucket:     bucket,
 		issuer:     issuer,
 		refresh:    refresh,
 		codeLength: 6,
-		hashSalt:   util.GetEnvVar("HASH_SALT"),
+		hashSalt:   env.MustGet("HASH_SALT"),
 		twilio: twilioConfig{
-			from:    util.GetEnvVar("TWILIO_FROM_NUMBER"),
+			from:    env.MustGet("TWILIO_FROM_NUMBER"),
 			message: tc.Messages,
 			lookup:  tlc.LookupPhoneNumbers,
 		},
