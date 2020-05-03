@@ -21,15 +21,19 @@ import (
 	"github.com/kevinburke/twilio-go"
 )
 
+type twilioConfig struct {
+	from    string
+	message *twilio.MessageService
+	lookup  *twilio.LookupPhoneNumbersService
+}
+
 type smsHandler struct {
 	bucket     storage.JSONBucket
 	issuer     *jwt.Issuer
 	refresh    *jwt.Issuer
 	codeLength int
 	hashSalt   string
-	fromNumber string
-	messageSvc *twilio.MessageService
-	lookupSvc  *twilio.LookupPhoneNumbersService
+	twilio     twilioConfig
 }
 
 func NewSMS(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td, rd time.Duration) Handler {
@@ -45,9 +49,11 @@ func NewSMS(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td
 		refresh:    refresh,
 		codeLength: 6,
 		hashSalt:   util.GetEnvVar("HASH_SALT"),
-		fromNumber: util.GetEnvVar("TWILIO_FROM_NUMBER"),
-		messageSvc: tc.Messages,
-		lookupSvc:  tlc.LookupPhoneNumbers,
+		twilio: twilioConfig{
+			from:    util.GetEnvVar("TWILIO_FROM_NUMBER"),
+			message: tc.Messages,
+			lookup:  tlc.LookupPhoneNumbers,
+		},
 	}
 }
 
@@ -95,7 +101,7 @@ func (h *smsHandler) TokenMeta(ctx context.Context, r *http.Request) (*tokenMeta
 	qp.Add("CountryCode", "US")
 	qp.Add("Type", "carrier")
 
-	lpn, err := h.lookupSvc.Get(ctx, req.Phone, qp)
+	lpn, err := h.twilio.lookup.Get(ctx, req.Phone, qp)
 	if err != nil || lpn.CountryCode != "US" || lpn.Carrier.Type != "mobile" {
 		return nil, errors.New("error with phone number lookup")
 	}
@@ -143,8 +149,8 @@ func (h *smsHandler) Dispatch(ctx context.Context, tm *tokenMeta) error {
 		return errors.New("invalid phone number")
 	}
 
-	if _, err := h.messageSvc.SendMessage(
-		h.fromNumber,
+	if _, err := h.twilio.message.SendMessage(
+		h.twilio.from,
 		tm.dispatch,
 		fmt.Sprintf("Your COVID Trace verification code is %s", tm.Code),
 		nil,

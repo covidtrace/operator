@@ -15,16 +15,25 @@ import (
 	"github.com/covidtrace/operator/storage"
 	"github.com/covidtrace/operator/util"
 	"github.com/google/uuid"
+	"github.com/sendgrid/sendgrid-go"
+	"github.com/sendgrid/sendgrid-go/helpers/mail"
 )
 
+type sendgridConfig struct {
+	address    string
+	name       string
+	apiKey     string
+	templateID string
+}
+
 type emailHandler struct {
-	bucket      storage.JSONBucket
-	whitelist   storage.Bucket
-	issuer      *jwt.Issuer
-	refresh     *jwt.Issuer
-	codeLength  int
-	fromAddress string
-	role        string
+	bucket     storage.JSONBucket
+	whitelist  storage.Bucket
+	issuer     *jwt.Issuer
+	refresh    *jwt.Issuer
+	codeLength int
+	role       string
+	sendgrid   sendgridConfig
 }
 
 func NewEmail(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, td, rd time.Duration) (Handler, error) {
@@ -37,13 +46,18 @@ func NewEmail(bucket storage.JSONBucket, jwtSigningKey []byte, iss, aud string, 
 	}
 
 	return &emailHandler{
-		bucket:      bucket,
-		whitelist:   whitelist,
-		issuer:      issuer,
-		refresh:     refresh,
-		codeLength:  8,
-		fromAddress: util.GetEnvVar("EMAIL_FROM_ADDRESS"),
-		role:        util.GetEnvVar("JWT_ELEVATED_ROLE"),
+		bucket:     bucket,
+		whitelist:  whitelist,
+		issuer:     issuer,
+		refresh:    refresh,
+		codeLength: 8,
+		role:       util.GetEnvVar("JWT_ELEVATED_ROLE"),
+		sendgrid: sendgridConfig{
+			address:    util.GetEnvVar("EMAIL_FROM_ADDRESS"),
+			name:       util.GetEnvVar("EMAIL_FROM_NAME"),
+			apiKey:     util.GetEnvVar("SENDGRID_API_KEY"),
+			templateID: util.GetEnvVar("SENDGRID_DYNAMIC_TEMPLATE_ID"),
+		},
 	}, nil
 }
 
@@ -119,8 +133,30 @@ func (h *emailHandler) TokenMeta(ctx context.Context, r *http.Request) (*tokenMe
 	}, nil
 }
 
-func (h *emailHandler) Dispatch(context.Context, *tokenMeta) error {
-	// TODO this
+func (h *emailHandler) Dispatch(ctx context.Context, tm *tokenMeta) error {
+	m := mail.NewV3Mail()
+	m.SetTemplateID(h.sendgrid.templateID)
+	m.SetFrom(mail.NewEmail(h.sendgrid.name, h.sendgrid.address))
+
+	p := mail.NewPersonalization()
+	p.AddTos(&mail.Email{Address: tm.dispatch})
+	p.SetDynamicTemplateData("code", tm.Code)
+
+	m.AddPersonalizations(p)
+
+	req := sendgrid.GetRequest(h.sendgrid.apiKey, "/v3/mail/send", "https://api.sendgrid.com")
+	req.Method = "POST"
+	req.Body = mail.GetRequestBody(m)
+
+	res, err := sendgrid.API(req)
+	if err != nil {
+		return err
+	}
+
+	if res.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("unexpected sendgrid http status: %v", res.StatusCode)
+	}
+
 	return nil
 }
 
