@@ -4,7 +4,8 @@ go 1.14
 
 require (
 	cloud.google.com/go v0.38.0
-	github.com/covidtrace/jwt v0.3.1
+	github.com/covidtrace/jwt v0.4.1
+	github.com/covidtrace/utils v0.0.6
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/google/uuid v1.1.1
 	github.com/inconshreveable/log15 v0.0.0-20200109203555-b30bc20e4fd1 // indirect
@@ -14,6 +15,8 @@ require (
 	github.com/kevinburke/rest v0.0.0-20191030174917-82a468bd5192 // indirect
 	github.com/kevinburke/twilio-go v0.0.0-20200203063821-378e630e02da
 	github.com/mattn/go-colorable v0.1.6 // indirect
+	github.com/sendgrid/rest v2.4.1+incompatible // indirect
+	github.com/sendgrid/sendgrid-go v3.5.0+incompatible
 	github.com/ttacon/builder v0.0.0-20170518171403-c099f663e1c2 // indirect
 	github.com/ttacon/libphonenumber v1.1.0 // indirect
 	go.opencensus.io v0.22.3 // indirect

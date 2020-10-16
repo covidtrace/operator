@@ -1,335 +1,78 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"crypto/sha512"
-	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
-	"math/rand"
 	"net/http"
-	"net/url"
-	"os"
-	"strings"
 	"time"
 
-	"cloud.google.com/go/storage"
-	"github.com/covidtrace/jwt"
-	"github.com/google/uuid"
+	"github.com/covidtrace/operator/handler"
+	"github.com/covidtrace/operator/storage"
+	"github.com/covidtrace/utils/env"
+	httputils "github.com/covidtrace/utils/http"
 	"github.com/julienschmidt/httprouter"
-	twilio "github.com/kevinburke/twilio-go"
 )
 
-func getEnvVar(key string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		panic(fmt.Errorf("%s is required env var", key))
-	}
-
-	return value
-}
-
-var tokenNamespace string
-var tokenIssuer *jwt.Issuer
-var refreshTokenIssuer *jwt.Issuer
-var hashSalt string
-var codeLength int = 6
-
-var storageClient *storage.Client
-var storageBucket *storage.BucketHandle
-
-var twilioMessages *twilio.MessageService
-var twilioLookup *twilio.LookupPhoneNumbersService
-var twilioFromNumber string
+var tokenHandler handler.Handler
+var elevatedHandler handler.Handler
 
 func init() {
 	var err error
 
-	tokenNamespace = getEnvVar("JWT_NAMESPACE")
+	jsk := []byte(env.MustGet("JWT_SIGNING_KEY"))
+	tns := env.MustGet("JWT_NAMESPACE")
 
-	td, err := time.ParseDuration(getEnvVar("JWT_TOKEN_DURATION"))
+	ttd, err := time.ParseDuration(env.MustGet("JWT_TOKEN_DURATION"))
 	if err != nil {
 		panic(err)
 	}
 
-	tokenIssuer = jwt.NewIssuer(
-		[]byte(getEnvVar("JWT_SIGNING_KEY")),
-		fmt.Sprintf("%s/operator", tokenNamespace),
-		fmt.Sprintf("%s/token", tokenNamespace),
-		td,
-	)
-
-	rd, err := time.ParseDuration(getEnvVar("JWT_REFRESH_DURATION"))
+	trd, err := time.ParseDuration(env.MustGet("JWT_REFRESH_DURATION"))
 	if err != nil {
 		panic(err)
 	}
 
-	refreshTokenIssuer = jwt.NewIssuer(
-		[]byte(getEnvVar("JWT_SIGNING_KEY")),
-		fmt.Sprintf("%s/operator", tokenNamespace),
-		fmt.Sprintf("%s/refresh", tokenNamespace),
-		rd,
-	)
-
-	hashSalt = getEnvVar("HASH_SALT")
-
-	mc := twilio.NewClient(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"), nil)
-	twilioMessages = mc.Messages
-
-	lookupClient := twilio.NewLookupClient(getEnvVar("TWILIO_ACCOUNT_SID"), getEnvVar("TWILIO_AUTH_TOKEN"), nil)
-	twilioLookup = lookupClient.LookupPhoneNumbers
-
-	twilioFromNumber = getEnvVar("TWILIO_FROM_NUMBER")
-
-	c, err := storage.NewClient(context.Background())
+	tb, err := storage.NewJSONBucket(env.MustGet("CLOUD_STORAGE_BUCKET"))
 	if err != nil {
 		panic(err)
 	}
 
-	storageClient = c
-	storageBucket = storageClient.Bucket(getEnvVar("CLOUD_STORAGE_BUCKET"))
-}
+	iss := fmt.Sprintf("%s/operator", tns)
+	tokenHandler = handler.NewSMS(tb, jsk, iss, fmt.Sprintf("%s/token", tns), ttd, trd)
 
-type errMessage struct {
-	Message string `json:"status"`
-}
-
-type initBody struct {
-	PhoneNumber string `json:"phone"`
-}
-
-type initResp struct {
-	Token string `json:"token"`
-}
-
-type tokenMetadata struct {
-	Code string `json:"code"`
-	Hash string `json:"hash"`
-}
-
-type verifyBody struct {
-	Token string `json:"token"`
-	Code  string `json:"code"`
-}
-
-type verifyResp struct {
-	Token   string `json:"token"`
-	Refresh string `json:"refresh"`
-}
-
-func replyJSON(w http.ResponseWriter, code int, r interface{}) {
-	b, err := json.Marshal(r)
+	etd, err := time.ParseDuration(env.MustGet("JWT_ELEVATED_TOKEN_DURATION"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		panic(err)
 	}
 
-	w.WriteHeader(code)
-	io.Copy(w, bytes.NewReader(b))
+	erd, err := time.ParseDuration(env.MustGet("JWT_ELEVATED_REFRESH_DURATION"))
+	if err != nil {
+		panic(err)
+	}
+
+	elevatedHandler, err = handler.NewEmail(tb, jsk, iss, fmt.Sprintf("%s/elevated", tns), etd, erd)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func main() {
 	router := httprouter.New()
 
-	router.POST("/init", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		ctx := context.Background()
+	// General covidtrace/token token handlers
+	router.POST("/init", handler.Init(tokenHandler))
+	router.POST("/verify", handler.Verify(tokenHandler))
+	router.POST("/refresh", handler.Refresh(tokenHandler))
 
-		var ib initBody
-		if r.Body == nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Missing request body"})
-			return
-		}
-		defer r.Body.Close()
-
-		err := json.NewDecoder(r.Body).Decode(&ib)
-		if err == io.EOF {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Missing request body"})
-			return
-		}
-
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error parsing request body"})
-			return
-		}
-
-		if ib.PhoneNumber == "" {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Missing phone number"})
-			return
-		}
-
-		qp := url.Values{}
-		qp.Add("CountryCode", "US")
-		qp.Add("Type", "carrier")
-		lpn, err := twilioLookup.Get(ctx, ib.PhoneNumber, qp)
-		if err != nil || lpn.CountryCode != "US" || lpn.Carrier.Type != "mobile" {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error with phone number lookup"})
-			return
-		}
-
-		key, err := uuid.NewRandom()
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error generating key"})
-			return
-		}
-
-		digits := make([]string, codeLength)
-		rand.Seed(int64(key.ID()))
-
-		for i := 0; i < codeLength; i++ {
-			digits[i] = fmt.Sprintf("%v", rand.Int()%10)
-		}
-		code := strings.Join(digits, "")
-
-		components := []string{
-			hashSalt,
-			lpn.Carrier.Type,
-			lpn.Carrier.MobileCountryCode,
-			lpn.Carrier.MobileNetworkCode,
-			lpn.Carrier.Name,
-			lpn.CountryCode,
-			lpn.PhoneNumber,
-		}
-
-		hash := sha512.New()
-		for _, component := range components {
-			if _, err := io.WriteString(hash, component); err != nil {
-				replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error updating hash"})
-				return
-			}
-		}
-
-		tm := tokenMetadata{Code: code, Hash: base64.StdEncoding.EncodeToString(hash.Sum(nil))}
-
-		ow := storageBucket.Object(fmt.Sprintf("%s.json", key)).NewWriter(ctx)
-		if err := json.NewEncoder(ow).Encode(tm); err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error persisting token and code"})
-			return
-		}
-
-		if err := ow.Close(); err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error persisting token and code"})
-			return
-		}
-
-		_, err = twilioMessages.SendMessage(
-			twilioFromNumber,
-			ib.PhoneNumber,
-			fmt.Sprintf("Your COVID Trace verification code is %s", code),
-			nil,
-		)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error sending SMS"})
-			return
-		}
-
-		replyJSON(w, http.StatusOK, initResp{Token: key.String()})
-	})
-
-	router.POST("/verify", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		ctx := context.Background()
-
-		var vb verifyBody
-		if r.Body == nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Missing request body"})
-			return
-		}
-		defer r.Body.Close()
-
-		err := json.NewDecoder(r.Body).Decode(&vb)
-		if err == io.EOF {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Missing request body"})
-			return
-		}
-
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error parsing request body"})
-			return
-		}
-
-		var tm tokenMetadata
-		oh := storageBucket.Object(fmt.Sprintf("%s.json", vb.Token))
-
-		or, err := oh.NewReader(ctx)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error fetching token metadata"})
-			return
-		}
-
-		if err := json.NewDecoder(or).Decode(&tm); err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error fetching token metadata"})
-			return
-		}
-
-		if err := or.Close(); err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error fetching token metadata"})
-			return
-		}
-
-		if tm.Code != vb.Code {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Invalid code"})
-			return
-		}
-
-		token, err := tokenIssuer.Token(tm.Hash, 0)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
-			return
-		}
-
-		refresh, err := refreshTokenIssuer.Token(tm.Hash, 0)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
-			return
-		}
-
-		if err := oh.Delete(ctx); err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: "Error deleting metadata"})
-			return
-		}
-
-		replyJSON(w, http.StatusOK, verifyResp{Token: token, Refresh: refresh})
-	})
-
-	router.POST("/refresh", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		qp := r.URL.Query()
-		code := qp.Get("code")
-		if code == "" {
-			replyJSON(w, http.StatusUnauthorized, errMessage{Message: "Missing code parameter"})
-			return
-		}
-
-		claims, err := refreshTokenIssuer.Validate(code)
-		if err != nil {
-			replyJSON(w, http.StatusUnauthorized, errMessage{Message: err.Error()})
-			return
-		}
-
-		token, err := tokenIssuer.Token(claims.Hash, claims.Refreshed+1)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
-			return
-		}
-
-		refresh, err := refreshTokenIssuer.Token(claims.Hash, claims.Refreshed+1)
-		if err != nil {
-			replyJSON(w, http.StatusBadRequest, errMessage{Message: err.Error()})
-			return
-		}
-
-		replyJSON(w, http.StatusOK, verifyResp{Token: token, Refresh: refresh})
-	})
+	// General covidtrace/elevated token handlers
+	router.POST("/elevated/init", handler.Init(elevatedHandler))
+	router.POST("/elevated/verify", handler.Verify(elevatedHandler))
+	router.POST("/elevated/refresh", handler.Refresh(elevatedHandler))
 
 	router.PanicHandler = func(w http.ResponseWriter, _ *http.Request, _ interface{}) {
-		http.Error(w, "Unknown error", http.StatusBadRequest)
+		httputils.ReplyInternalServerError(w, errors.New("Unknown error"))
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), router))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", env.GetDefault("port", "8080")), router))
 }
